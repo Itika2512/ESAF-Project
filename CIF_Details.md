@@ -1,0 +1,15 @@
+Task Code 7022:
+CIF: 260001508
+Loan Account Number: 51000000374690
+CASA Account Number: 1865010055982
+
+
+Please find below the CIF IDs that were used for SIT testing in DSGL:
+ 
+1.260001508 - 1865010055982
+2.260001251
+3.230636715
+4.241277148
+5.200668316
+6.260001255
+ 

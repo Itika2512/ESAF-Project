@@ -1,0 +1,47 @@
+{
+  "name": "esaf-playwright",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:parallel": "playwright test --workers=10",
+    "load": "LOAD_TEST=1 playwright test tests",
+    "load:smoke": "LOAD_TEST=1 VUS=2 RAMP_UP_SEC=10 ITERATIONS=2 DURATION_SEC=900 playwright test tests",
+    "load:crm": "LOAD_TEST=1 SYSTEMS=crm playwright test tests/crm",
+    "load:cbs": "LOAD_TEST=1 SYSTEMS=cbs playwright test tests/cbs",
+    "load:aoco": "LOAD_TEST=10 SYSTEMS=aoco playwright test tests/aoco",
+    "load:crm:smoke": "LOAD_TEST=1 SYSTEMS=crm VUS=1 RAMP_UP_SEC=0 ITERATIONS=1 DURATION_SEC=1800 playwright test tests/crm",
+    "load:cbs:smoke": "LOAD_TEST=1 SYSTEMS=cbs VUS=1 RAMP_UP_SEC=0 ITERATIONS=1 DURATION_SEC=3600 playwright test tests/cbs",
+    "load:aoco:smoke": "LOAD_TEST=1 SYSTEMS=aoco VUS=1 RAMP_UP_SEC=0 ITERATIONS=1 DURATION_SEC=1800 playwright test tests/aoco",
+    "load:casa360": "LOAD_TEST=1 FLOWS=casa360 playwright test tests/crm",
+    "load:customer360": "LOAD_TEST=1 FLOWS=customer360 playwright test tests/crm",
+    "load:deposit360": "LOAD_TEST=1 FLOWS=deposit360 playwright test tests/crm",
+    "load:srmobileupdate": "LOAD_TEST=1 FLOWS=srMobileUpdate playwright test tests/crm",
+    "load:aoco:cif": "LOAD_TEST=1 FLOWS=aocoCifAlone playwright test tests/aoco",
+    "load:aoco:cif:smoke": "LOAD_TEST=1 FLOWS=aocoCifAlone VUS=1 RAMP_UP_SEC=0 ITERATIONS=1 DURATION_SEC=1800 playwright test tests/aoco",
+    "load:cashdeposit": "LOAD_TEST=1 FLOWS=cashDeposit playwright test tests/cbs",
+    "load:cashdeposit:smoke": "LOAD_TEST=1 FLOWS=cashDeposit VUS=1 RAMP_UP_SEC=0 ITERATIONS=1 DURATION_SEC=1800 playwright test tests/cbs",
+    "load:balanceenquiry": "LOAD_TEST=1 FLOWS=balanceEnquiry playwright test tests/cbs",
+    "load:balanceenquiry:smoke": "LOAD_TEST=1 FLOWS=balanceEnquiry VUS=2 RAMP_UP_SEC=10 ITERATIONS=2 DURATION_SEC=1800 playwright test tests/cbs",
+    "load:cashwithdrawal": "LOAD_TEST=1 FLOWS=cashWithdrawal playwright test tests/cbs",
+    "load:casatransfer": "LOAD_TEST=1 FLOWS=casaTransfer playwright test tests/cbs",
+    "load:neft": "LOAD_TEST=1 FLOWS=neftPayment playwright test tests/cbs",
+    "load:rtgs": "LOAD_TEST=1 FLOWS=rtgsPayment playwright test tests/cbs",
+    "load:imps": "LOAD_TEST=1 FLOWS=impsPayment playwright test tests/cbs",
+    "load:loanpayment": "LOAD_TEST=1 FLOWS=loanPayment playwright test tests/cbs",
+    "load:tdquickpayin": "LOAD_TEST=1 FLOWS=tdQuickPayin playwright test tests/cbs",
+    "load:tdredemption": "LOAD_TEST=1 FLOWS=tdRedemption playwright test tests/cbs",
+    "load:nominee": "LOAD_TEST=1 FLOWS=nomineeMaintenance playwright test tests/cbs",
+    "load:passbook": "LOAD_TEST=1 FLOWS=passbookReissue playwright test tests/cbs",
+    "load:report": "node scripts/report.js",
+    "load:pdf": "node scripts/pdf.js",
+    "load:report:pdf": "node scripts/report.js && node scripts/pdf.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^25.9.1"
+  },
+  "dependencies": {
+    "playwright": "^1.62.1"
+  }
+}
