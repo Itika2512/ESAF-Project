@@ -78,7 +78,7 @@ match the CRM dropdown labels exactly.
 npm run load:smoke
 
 # full run with the configured profile
-LOAD_TEST=1 VUS=25 RAMP_UP_SEC=300 DURATION_SEC=1800 npm run load
+npx cross-env LOAD_TEST=1 VUS=25 RAMP_UP_SEC=300 DURATION_SEC=1800 npm run load
 
 # whole application: SYSTEMS expands to every flow of that app and the folder
 # scopes collection to its specs
@@ -107,8 +107,8 @@ npm run load:balanceenquiry
 
 # CBS cash deposit — posts real transactions, never included by default
 npm run load:cashdeposit:smoke      # 1 VU, 1 deposit, validates the flow end to end
-LOAD_TEST=1 FLOWS=cashDeposit VUS=5 RAMP_UP_SEC=60 DURATION_SEC=600 \
-  npx playwright test tests/load/cbs
+npx cross-env LOAD_TEST=1 FLOWS=cashDeposit VUS=5 RAMP_UP_SEC=60 DURATION_SEC=600 \
+  npx playwright test tests/cbs
 
 # the remaining CBS flows — all write data
 npm run load:cashwithdrawal
@@ -123,8 +123,8 @@ npm run load:nominee
 npm run load:passbook
 
 # mixed CBS load: read-heavy enquiries alongside a lighter posting load
-LOAD_TEST=1 FLOWS=balanceEnquiry,cashDeposit VUS_BALANCEENQUIRY=8 VUS_CASHDEPOSIT=2 \
-  RAMP_UP_SEC=60 DURATION_SEC=600 npx playwright test tests/load
+npx cross-env LOAD_TEST=1 FLOWS=balanceEnquiry,cashDeposit VUS_BALANCEENQUIRY=8 VUS_CASHDEPOSIT=2 \
+  RAMP_UP_SEC=60 DURATION_SEC=600 npx playwright test tests
 ```
 
 `npm run load` targets `tests/load` only. Regular functional runs (`npm test`) exclude
@@ -163,6 +163,12 @@ Running a folder without either variable lists every spec as `disabled via FLOWS
 | `HEADLESS` | `true` | Set `false` to watch the browsers |
 | `WORKERS` | `= total VUs` | Playwright worker processes (one browser each) |
 | `ABORT_ON_ERROR` | `false` | Fail the whole VU on the first transaction error |
+| `RECOVER_ON_FAILURE` | `true` | After a failed iteration, clear blocking popups and leftover task tabs before the next one |
+| `MAX_CONSECUTIVE_FAILURES` | `3` | End a VU after this many failed iterations in a row |
+| `ACTION_TIMEOUT_MS` | `60000` | Playwright timeout for a single click/fill |
+| `NAV_TIMEOUT_MS` | `90000` | Playwright navigation timeout |
+| `FIELD_TIMEOUT_MS` | `10000` | Wait for a server-populated field (rate, derived amount) |
+| `TEST_TIMEOUT_MS` | derived from ramp-up + duration | Hard override for the per-VU test timeout |
 | `APDEX_T_MS` | `3000` | Apdex satisfied threshold (tolerating = 4T) |
 | `SLO_P95_MS` | `5000` | SLO: p95 response time |
 | `SLO_P99_MS` | `8000` | SLO: p99 response time |
@@ -259,8 +265,190 @@ LOAD_RUN_ID=20260730-171500 npm run load:report
 - **HTTP 5xx / failed requests** — server-side saturation signals.
 - **SLO verdict** — `PASS`/`FAIL` computed from the `SLO_*` thresholds.
 
+### Why the error count is not inflated by one popup
+
+An application error usually arrives as a blocking modal — for example
+`Oracle FLEXCUBE Message — FC_JSON_CLIENT_ERR_006`. The iteration that triggered
+it is aborted at the failing step, so the cleanup at the end of that flow
+(closing the confirmation and the task tab) never runs. Left alone, the modal
+stays on screen and every field underneath is unclickable, so each following
+iteration also fails — one real defect gets reported dozens of times.
+
+Five mechanisms keep the numbers honest:
+
+- **Cleanup inside the failed iteration** — as soon as a step throws, the
+  harness dismisses every modal on screen, before the iteration is left. All
+  stacked dialogs are cleared, not just the topmost one: FLEXCUBE often puts an
+  error message on top of a session-timeout warning, and clearing only the top
+  one leaves the screen just as blocked.
+- **Pre-flight guard** — an iteration never starts on a screen that still has a
+  modal on it. Anything left over is cleared first, so the first click of the
+  new iteration is not measured against a stale overlay. If the popup cannot be
+  cleared, the VU ends rather than logging failures caused by it.
+- **Recovery hook** — after a failed iteration the flow's `recover` hook
+  (`cbsResetToBaseline` for CBS) closes leftover task tabs, strips any leftover
+  modal glass layers from the DOM (without reloading the page, which would kill
+  the session), and then *proves* the screen is usable again by hit-testing the
+  task search box (see below). If the session is genuinely lost, it signals
+  `needsReLogin` and the harness re-runs login + FCR selection. Disable the
+  whole mechanism with `RECOVER_ON_FAILURE=false`.
+- **Circuit breaker** — if a VU still fails `MAX_CONSECUTIVE_FAILURES` (default
+  `3`) iterations in a row, it is ended instead of continuing to log duplicates
+  of the same unresolved problem. The report then shows a handful of real
+  failures rather than hundreds of knock-on ones.
+- **Cause attribution** — the modal text is captured before recovery and
+  recorded as `APP DIALOG (blocking popup)`. This label is excluded from
+  transaction statistics, so it never counts towards the error rate, but it
+  appears in `errors.csv` and `error-details.txt` next to the failure it
+  caused. That way the report names the actual FLEXCUBE error instead of only
+  the Playwright timeout it produced.
+
+The console makes the sequence explicit while the test runs:
+
+```
+[cashDeposit] VU 3 iteration 12 failed: transaction "02 Cash Deposit - Enter transaction" failed: locator.fill: Timeout 10000ms exceeded
+           app dialog: Oracle FLEXCUBE Message FC_JSON_CLIENT_ERR_006 : Couldn't find the Message for [FC_JSON_CLIENT_ERR_006] OK
+           screenshot: screenshots/cashDeposit-vu3-iter12.png
+[cashDeposit] VU 3 closed 2 popup(s) left open by iteration 12
+[cashDeposit] VU 3 recovered after iteration 12 (1 tab(s) closed)
+```
+
+If recovery itself cannot clear the screen, the VU is ended with the reason
+logged, which is the signal that the environment — not the script — needs
+attention.
+
+### Why "no dialog on screen" is not enough
+
+Counting dialogs is not a reliable test of whether the screen works. When an
+Oracle JET dialog is torn down abnormally its modal glass layer
+(`div.oj-dialog-layer`) can be left behind: the dialog is gone, so every
+dialog-based check reports a clean screen, and Playwright still reports the task
+search box as visible and editable — but the transparent layer sits on top and
+swallows every click. The only visible symptom is
+`locator.click: Timeout 60000ms exceeded` on a control that looks perfectly fine.
+
+Recovery therefore finishes by asking the browser what is *actually* at the
+centre of the task search box (`document.elementFromPoint`). If something else is
+on top, the leftover overlay elements (`.oj-dialog-layer`, `.oj-modal-glass`,
+etc.) are stripped from the DOM directly — **not** by reloading the page, which
+would invalidate the server-side session and force a full re-authentication.
+
+If the session is genuinely lost (the popup was closed, or the server has
+timed out), recovery returns `needsReLogin: true` and the harness re-runs the
+full login + FCR selection flow, exactly as it does when `cbsLoggedOut` detects
+the login form. The log makes the sequence explicit:
+
+```
+[cashDeposit] VU 3 needs re-login after iteration 12: page closed
+[cashDeposit] VU 3 session lost, re-authenticating (1)
+```
+
+### Reproducing a stuck screen locally
+
+Run one VU, headed, with the timeouts opened right up so the browser sits on the
+failing screen instead of tearing the run down while you inspect it. Turn
+recovery off so nothing is cleaned up before you can look at it:
+
+```bash
+LOAD_TEST=1 FLOWS=cashDeposit VUS=1 WORKERS=1 HEADLESS=false \
+  ACTION_TIMEOUT_MS=600000 NAV_TIMEOUT_MS=600000 \
+  FIELD_TIMEOUT_MS=300000 TEST_TIMEOUT_MS=7200000 \
+  RECOVER_ON_FAILURE=false MAX_CONSECUTIVE_FAILURES=999 \
+  DURATION_SEC=3600 RAMP_UP_SEC=0 \
+  npx playwright test tests/cbs/cashDeposit.load.spec.js
+```
+
+Each VU prints its effective settings on startup, so the log states plainly
+which safety nets were armed:
+
+```
+[cashDeposit] VU 1 starting | recovery on | stop after 3 consecutive failures | action timeout 60000 ms | field wait 10000 ms
+```
+
 ## 7. Report a run alongside server-side metrics
 
 Client-side numbers alone are not a diagnosis. Capture CRM application server, DB and
 infrastructure metrics (CPU, memory, GC, thread pools, slow queries) over the same
 window and attach them to the run folder before sharing results.
+
+### Feeding a run into the consolidated ReportFramework
+
+Every load run also emits `load-results/<runId>/results.jtl.csv` — a
+JMeter-compatible JTL file where each UI transaction is a sampler. The Python
+ReportFramework (`ESAF Bank Performance Testing/ReportFramework`) consumes it
+through the standard `jtl_csv` input, so a UI run produces the same Excel report
+as a JMeter run, including node metrics and AWR sheets:
+
+- `label` ← the `step()` transaction name
+- `timeStamp` / `elapsed` ← exact sample timestamps and durations (ms)
+- `success` / `failureMessage` ← pass/fail and the Playwright error summary
+- `threadName` ← `<flow>-vu<N>`, one per virtual user — this is what the
+  cascaded-failure analysis groups iterations by
+- `URL` ← the transaction's data key (test-data row identifier)
+
+A ready-made execution config is provided at
+`reporting/report-framework.sample.json`. Copy it into the ReportFramework
+`config/` directory, fill in the run id, node metrics workbook and AWR paths,
+then:
+
+```bash
+cd "../ESAF Bank Performance Testing/ReportFramework"
+python3 generate_report.py --config config/<your_run>.json
+```
+
+Ad-hoc mode also works:
+
+```bash
+python3 generate_report.py \
+  --jmeter "../../playwright-esaf/load-results/<runId>/results.jtl.csv" \
+  --node-metrics "<node_metrics.xlsx>" --awr CBS="<awr_dir>" \
+  --name "CBS UI Load Test" --tool "Playwright UI load harness" \
+  --output "report.xlsx"
+```
+
+Notes on the sample config:
+
+- `boundary_labels` marks `ITERATION (end-to-end)` as the iteration boundary so
+  the cascaded-failure adjustment can tell a root-cause step failure from the
+  induced failures that follow it. Diagnostic pseudo-samples (`PAGE LOAD`,
+  `HTTP`, `APP DIALOG`) are in `exclude_labels`.
+- `api_map` `match` values are matched against the `step()` labels the flows
+  emit (e.g. `02 Loan Payment - Installment enquiry`, `RIB Fund Transfer`);
+  `"regex": true` entries use `re.search`, so a substring like
+  `"Loan Payment"` covers every numbered step of that flow.
+- Since `jtl_csv` carries exact timestamps, the report's `Test Start`/`Test End`
+  and per-API `First Sample`/`Last Sample` come from the UI samples themselves.
+
+## 8. Merging results from multiple VMs
+
+When a single machine cannot generate enough VUs, distribute the load across
+multiple VMs. Each VM runs its own Playwright instance and produces a
+`load-results/<runId>/` directory with `raw/*.jsonl` sample files.
+
+To merge all sources into one unified report:
+
+```bash
+# Copy each VM's run directory into load-results/ on the aggregation machine,
+# then run:
+npm run load:merge -- load-results/20260831-100000 load-results/20260831-100001
+
+# Custom merged run ID:
+npx cross-env LOAD_RUN_ID=merged-20260831 npm run load:merge -- \
+  load-results/vm1-20260831-100000 load-results/vm2-20260831-100001
+```
+
+What the merge script does:
+
+- Reads all `raw/*.jsonl` files from each source run directory.
+- Offsets VU numbers per source VM (`vmIndex * 10000 + original VU`) so every
+  VU is distinct in the aggregate — VU 1 from VM 1 and VU 1 from VM 2 do not
+  collide.
+- Copies and renames screenshots to match the offset VU numbers.
+- Merges `run-metadata.json` from all sources (flows, VU counts, SLO thresholds).
+- Runs the same aggregation pipeline as a single-VM report, producing
+  `index.html`, `summary.json`, all CSVs, and `error-details.txt` in
+  `load-results/<mergedRunId>/`.
+
+The merged report is identical in format to a single-VM report — all
+percentiles, throughput, error breakdowns and time series are computed across
+the combined sample set.

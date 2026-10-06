@@ -1,7 +1,7 @@
 import path from 'path';
 import { loadProfile, testTimeoutMs } from './config/loadProfile.js';
 
-const isLoadRun = process.env.LOAD_TEST === '10';
+const isLoadRun = process.env.LOAD_TEST === '1';
 
 function workerCount() {
   if (process.env.WORKERS) return parseInt(process.env.WORKERS, 10);
@@ -10,7 +10,11 @@ function workerCount() {
 
 export default {
   testDir: './tests',
-  testIgnore: isLoadRun ? undefined : ['**/load/**'],
+  // Load runs execute only the load specs (*.load.spec.js) — enforced via
+  // testMatch, so raw functional specs added later can never leak into a load
+  // run. Functional runs execute everything else.
+  testMatch: isLoadRun ? '**/*.load.spec.js' : '**/*.spec.js',
+  testIgnore: isLoadRun ? ['**/unit/**'] : ['**/*.load.spec.js'],
 
   fullyParallel: true,
   workers: workerCount(),
@@ -39,8 +43,8 @@ export default {
     screenshot: isLoadRun ? 'off' : 'only-on-failure',
     video: isLoadRun ? 'off' : 'retain-on-failure',
     ignoreHTTPSErrors: true,
-    actionTimeout: isLoadRun ? 60000 : 0,
-    navigationTimeout: isLoadRun ? 90000 : 0
+    actionTimeout: isLoadRun ? loadProfile.actionTimeoutMs : 0,
+    navigationTimeout: isLoadRun ? loadProfile.navigationTimeoutMs : 0
   },
 
   timeout: isLoadRun ? testTimeoutMs() : 50000

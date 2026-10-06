@@ -36,18 +36,22 @@ npm run load:smoke          # CRM: 2 VUs per flow, 2 iterations each
 Then run the real profile:
 
 ```bash
-LOAD_TEST=1 VUS=10 RAMP_UP_SEC=120 DURATION_SEC=600 npx playwright test tests/load
+npx cross-env LOAD_TEST=1 VUS=10 RAMP_UP_SEC=120 DURATION_SEC=600 npx playwright test tests
 ```
 
 Open the report when it finishes:
 
 ```bash
-open load-results/<runId>/index.html
+open load-results/<runId>/index.html          # macOS
+start load-results\\<runId>\\index.html         # Windows
 ```
 
 > `LOAD_TEST=1` is what switches Playwright into load mode: workers scale to the VU
 > count, retries/trace/video/screenshots are disabled so they cannot skew timings, and
-> the aggregated report is generated in the global teardown.
+> the aggregated report is generated in the global teardown. All `npm run load:*`
+> scripts use [`cross-env`](https://www.npmjs.com/package/cross-env) so they work on
+> Windows, macOS and Linux. When invoking `npx playwright test` directly, prefix with
+> `npx cross-env` as shown below.
 
 ---
 
@@ -134,16 +138,16 @@ npm run load:passbook
 
 
 # Mixed CBS load: read-heavy enquiries plus a lighter posting load
-LOAD_TEST=1 FLOWS=balanceEnquiry,cashDeposit \
+npx cross-env LOAD_TEST=1 FLOWS=balanceEnquiry,cashDeposit \
   VUS_BALANCEENQUIRY=8 VUS_CASHDEPOSIT=2 \
-  RAMP_UP_SEC=60 DURATION_SEC=600 npx playwright test tests/load
+  RAMP_UP_SEC=60 DURATION_SEC=600 npx playwright test tests
 
 # Watch a run in a visible browser
-LOAD_TEST=1 HEADLESS=false VUS=1 ITERATIONS=1 npx playwright test tests/load
+npx cross-env LOAD_TEST=1 HEADLESS=false VUS=1 ITERATIONS=1 npx playwright test tests
 
 # Rebuild the report without re-running the test
 npm run load:report                            # latest run
-LOAD_RUN_ID=20260818-143000 npm run load:report
+npx cross-env LOAD_RUN_ID=20260818-143000 npm run load:report
 
 # Functional (non-load) runs — load specs are excluded automatically
 npm test
@@ -153,15 +157,87 @@ npm run test:headed
 ### Fully specified example
 
 ```bash
-LOAD_TEST=1 \
-FLOWS=casa360,customer360 \
-BASE_URL=https://dr-crm.esafbank.org \
-TEST_ENV=dr \
-VUS=25 RAMP_UP_SEC=300 DURATION_SEC=1800 \
-THINK_TIME_MIN_MS=1000 THINK_TIME_MAX_MS=3000 \
-SLO_P95_MS=5000 SLO_P99_MS=8000 SLO_ERROR_RATE_PCT=2 APDEX_T_MS=3000 \
-npx playwright test tests/load
+npx cross-env LOAD_TEST=1 \
+  FLOWS=casa360,customer360 \
+  BASE_URL=https://dr-crm.esafbank.org \
+  TEST_ENV=dr \
+  VUS=25 RAMP_UP_SEC=300 DURATION_SEC=1800 \
+  THINK_TIME_MIN_MS=1000 THINK_TIME_MAX_MS=3000 \
+  SLO_P95_MS=5000 SLO_P99_MS=8000 SLO_ERROR_RATE_PCT=2 APDEX_T_MS=3000 \
+  npx playwright test tests
 ```
+
+### Distributing a run across multiple VMs
+
+When you need more VUs than one machine can drive, run the same script on
+multiple VMs. Two env vars split the test data so each VM logs in as a distinct
+set of users — no two VMs ever share a user:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `VM_ID` | `0` | 0-based index of this VM |
+| `VM_COUNT` | `1` | Total number of VMs running the same script |
+
+When `VM_COUNT > 1`, each VM takes a contiguous slice of the CSV's unique users:
+VM 0 gets users 0..VUS-1, VM 1 gets VUS..2*VUS-1, and so on. The CSV must contain
+at least `VM_COUNT * VUS` unique users. Metrics files are prefixed with
+`vm<vmId>-` so results from different VMs never collide, and every sample
+carries a `vmId` field for post-run aggregation.
+
+Checkers are per-VM (each VM runs its own `CHECKER_VUS` checkers against its
+own local file queue), so checker VUs do not need to be sliced.
+
+#### Example: 4 VMs, 25 maker VUs + 2 checker VUs each (100 makers + 8 checkers)
+
+```bash
+# VM 0
+VM_ID=0 VM_COUNT=4 VUS=25 CHECKER_VUS=2 npm run load:cbs:composite:checker
+
+# VM 1
+VM_ID=1 VM_COUNT=4 VUS=25 CHECKER_VUS=2 npm run load:cbs:composite:checker
+
+# VM 2
+VM_ID=2 VM_COUNT=4 VUS=25 CHECKER_VUS=2 npm run load:cbs:composite:checker
+
+# VM 3
+VM_ID=3 VM_COUNT=4 VUS=25 CHECKER_VUS=2 npm run load:cbs:composite:checker
+```
+
+#### Example: 4 VMs, 25 CRM VUs each (100 makers total)
+
+```bash
+# VM 0
+VM_ID=0 VM_COUNT=4 VUS=25 npm run load:crm:composite
+
+# VM 1
+VM_ID=1 VM_COUNT=4 VUS=25 npm run load:crm:composite
+
+# VM 2
+VM_ID=2 VM_COUNT=4 VUS=25 npm run load:crm:composite
+
+# VM 3
+VM_ID=3 VM_COUNT=4 VUS=25 npm run load:crm:composite
+```
+
+### Merging results from multiple VMs
+
+Each VM produces its own `load-results/<runId>/` directory. The merge script
+combines all raw samples into a single unified report with the same format as a
+single-VM run:
+
+```bash
+# Copy each VM's run directory into load-results/ on the aggregation machine,
+# then merge them:
+npm run load:merge -- load-results/20260831-100000 load-results/20260831-100001
+
+# Custom merged run ID:
+npx cross-env LOAD_RUN_ID=merged-20260831 npm run load:merge -- \
+  load-results/vm1-20260831-100000 load-results/vm2-20260831-100001
+```
+
+The merged report lands in `load-results/<mergedRunId>/` and contains the same
+artefacts as a single-VM run (`index.html`, `summary.json`, CSVs, screenshots).
+VU numbers are offset per source VM so each VU remains distinct in the aggregate.
 
 ---
 
@@ -224,6 +300,8 @@ repository root (`JMeterDocument.docx` by default).
 | `FLOWS` | `casa360,customer360` | Flows to run, comma separated — any of the keys in section 3; additive with `SYSTEMS` |
 | `VUS` | `10` | Virtual users per flow |
 | `VUS_<FLOW>` | `VUS` | Per-flow VU override, e.g. `VUS_CASHDEPOSIT=2` |
+| `VM_ID` | `0` | 0-based index of this VM when splitting data across VMs |
+| `VM_COUNT` | `1` | Total number of VMs running the same script (each takes a unique slice of users) |
 | `<FLOW>_TASK_CODE` / `<FLOW>_TASK_LABEL` | per flow | Override the CBS task a flow opens |
 | `RAMP_UP_SEC` | `60` | VUs start linearly across this window |
 | `DURATION_SEC` | `600` | Steady-state duration per VU |
@@ -300,3 +378,13 @@ infrastructure metrics over the same window and attach them to the run folder.
 | `[load-report] No samples found` | Run ended before any transaction completed, or wrong `LOAD_RUN_ID` |
 | Every VU fails at `00 Login` | Wrong credentials, wrong `BASE_URL`/`CBS_BASE_URL`, or the environment is down |
 | Timings look implausibly slow | Client saturation — reduce `VUS` or check machine CPU/RAM during the run |
+
+## Command to run CBS test:
+```
+LOAD_TEST=1 FLOWS=cbsComposite,cashWithdrawal,tdRedemption,loanCollateralLink,casaChequeWithdrawal,LoanAccountStatusChange,nomineeMaintenance VUS=10 playwright test tests/cbs
+```
+
+## Command to run RLOS test:
+```
+npx cross-env VUS=20 VM_ID=0 VM_COUNT=8 RAMP_UP_SEC=600 DURATION_SEC=3600 npm run load:rlos:journey
+```
